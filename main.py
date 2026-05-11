@@ -1,67 +1,132 @@
-import cv2
 import os
+import cv2
+import torch
 import numpy as np
+from torchvision.models.detection import ssdlite320_mobilenet_v3_large
+from torchvision.models.detection.ssd import SSDHead
+from torchvision.transforms import functional as F
 
-
+# --- CONFIG ---
 IMG_DIR = 'data/images'
 LABEL_DIR = 'data/labels'
 OUT_DIR = 'data/output'
+MODEL_PATH = 'dog_face_finetuned.pth'
 os.makedirs(OUT_DIR, exist_ok=True)
 
-LABELS = ["L_Eye", "R_Eye", "Nose"]
+def load_custom_ssd(num_classes=2):
+    model = ssdlite320_mobilenet_v3_large(weights='DEFAULT')
+    # Use list comprehension to handle Sequential modules in torchvision
+    in_channels = []
+    for m in model.head.classification_head.module_list:
+        for sub in m.modules():
+            if hasattr(sub, 'in_channels'):
+                in_channels.append(sub.in_channels)
+                break
+    num_anchors = model.anchor_generator.num_anchors_per_location()
+    model.head = SSDHead(in_channels, num_anchors, num_classes)
+    return model
 
-images = [f for f in os.listdir(IMG_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+# --- GRID SEARCH LOGIC ---
+def grid_search_landmarks(roi):
+    """
+    Performs a grid search within the ROI to find 3 specific landmarks.
+    """
+    h, w = roi.shape[:2]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
-for img_name in images:
-    img_path = os.path.join(IMG_DIR, img_name)
-    label_path = os.path.join(LABEL_DIR, os.path.splitext(img_name)[0] + ".txt")
+    # Define Grid Sectors (y_start, y_end, x_start, x_end)
+    # 1. Left Eye: Top-Left quadrant
+    l_eye_grid = gray[0:int(h*0.45), 0:int(w*0.5)]
+    # 2. Right Eye: Top-Right quadrant
+    r_eye_grid = gray[0:int(h*0.45), int(w*0.5):w]
+    # 3. Nose: Bottom-Center region
+    nose_grid = gray[int(h*0.45):int(h*0.9), int(w*0.2):int(w*0.8)]
+
+    def get_darkest_point(grid_patch):
+        if grid_patch.size == 0: return (0, 0)
+        _, _, min_loc, _ = cv2.minMaxLoc(grid_patch)
+        return min_loc
+
+    l_eye = get_darkest_point(l_eye_grid)
+    r_eye = get_darkest_point(r_eye_grid)
+    nose = get_darkest_point(nose_grid)
+
+    return {
+        "L_Eye": (l_eye[0], l_eye[1]),
+        "R_Eye": (r_eye[0] + int(w*0.5), r_eye[1]),
+        "Nose": (nose[0] + int(w*0.2), nose[1] + int(h*0.45))
+    }
+
+# --- TRAINING (Run if .pth is missing) ---
+def train_if_needed():
+    if os.path.exists(MODEL_PATH): return
+    model = load_custom_ssd()
+    for param in model.backbone.parameters(): param.requires_grad = False
+    optimizer = torch.optim.Adam(model.head.parameters(), lr=0.0005)
+    label_files = [f for f in os.listdir(LABEL_DIR) if f.endswith('.txt')]
     
-    img = cv2.imread(img_path)
-    if img is None: continue
-    h, w = img.shape[:2]
-
-    if os.path.exists(label_path):
-        with open(label_path, 'r') as f:
-            lines = f.readlines()
+    print("🎬 Training model to localize face ROI...")
+    for epoch in range(50):
+        model.train()
+        model.backbone.eval()
+        for lbl in label_files:
+            img_path = os.path.join(IMG_DIR, lbl.replace('.txt', '.png'))
+            if not os.path.exists(img_path): img_path = os.path.join(IMG_DIR, lbl.replace('.txt', '.jpg'))
+            img = cv2.imread(img_path)
+            if img is None: continue
+            img = cv2.resize(img, (320, 320))
+            with open(os.path.join(LABEL_DIR, lbl), 'r') as f:
+                line = f.readline().split()
+                if not line: continue
+                cx, cy, nw, nh = map(float, line[1:])
+                x1, y1, x2, y2 = (cx-nw/2)*320, (cy-nh/2)*320, (cx+nw/2)*320, (cy+nh/2)*320
             
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) < 5: continue
-            # YOLO Parse
-            xc, yc, bw, bh = map(float, parts[1:])
-            x1, y1 = int((xc - bw/2) * w), int((yc - bh/2) * h)
-            x2, y2 = int((xc + bw/2) * w), int((yc + bh/2) * h)
-            x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+            images = [F.to_tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))]
+            targets = [{'boxes': torch.tensor([[x1, y1, x2, y2]], dtype=torch.float32), 'labels': torch.tensor([1], dtype=torch.int64)}]
+            optimizer.zero_grad()
+            loss_dict = model(images, targets)
+            sum(loss for loss in loss_dict.values()).backward()
+            optimizer.step()
+    torch.save(model.state_dict(), MODEL_PATH)
 
-            # searching for the landmarks inside ROI
-            roi = img[y1:y2, x1:x2] # HERE WE DEFINE THE ROI - Region of interest based on the parsed values from yolo format of the labels --> stored in data/labels directory.
-            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            rw, rh = gray_roi.shape[1], gray_roi.shape[0]
-
-            def get_darkest_in_zone(z_x1, z_y1, z_x2, z_y2):
-                zone = gray_roi[int(z_y1):int(z_y2), int(z_x1):int(z_x2)]
-                if zone.size == 0: return (0, 0)
-            # Find the absolute darkest pixel in this specific zone
-                _, _, min_loc, _ = cv2.minMaxLoc(zone)
-                return (min_loc[0] + z_x1 + x1, min_loc[1] + z_y1 + y1)
-            # Define Zones (Relative to your manual box)
-            # Eyes are in the top half, Nose in the bottom center
-            pts = [
-                get_darkest_in_zone(rw*0.1, rh*0.2, rw*0.5, rh*0.5), # L_Eye Zone
-                get_darkest_in_zone(rw*0.5, rh*0.2, rw*0.9, rh*0.5), # R_Eye Zone
-                get_darkest_in_zone(rw*0.3, rh*0.5, rw*0.7, rh*0.9)  # Nose Zone
-            ]
-            # --- DRAW RESULTS ---
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(img,"", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            for idx, pt in enumerate(pts):
-
-                cv2.circle(img, (int(pt[0]), int(pt[1])), 6, (0, 255, 0), -1)
-                cv2.circle(img, (int(pt[0]), int(pt[1])), 6, (255, 255, 255), 1)
-                cv2.putText(img, LABELS[idx], (int(pt[0])+10, int(pt[1])), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 2)
+# --- INFERENCE ---
+def run_inference():
+    model = load_custom_ssd()
+    model.load_state_dict(torch.load(MODEL_PATH))
+    model.eval()
     
-    cv2.imwrite(os.path.join(OUT_DIR, f"OUTPUT_{img_name}"), img) #SO that the output is stored in data/output directory of dog_pose_project.
+    for img_name in os.listdir(IMG_DIR):
+        if not img_name.lower().endswith(('.png', '.jpg')): continue
+        img_orig = cv2.imread(os.path.join(IMG_DIR, img_name))
+        h_o, w_o = img_orig.shape[:2]
+        
+        # SSD Input
+        img_input = cv2.resize(img_orig, (320, 320))
+        img_tensor = [F.to_tensor(cv2.cvtColor(img_input, cv2.COLOR_BGR2RGB))]
+        
+        with torch.no_grad():
+            preds = model(img_tensor)
 
-print(f"\nDone! Results in {OUT_DIR}")
+        if len(preds[0]['boxes']) > 0:
+            box = preds[0]['boxes'][0].cpu().numpy()
+            x1, y1 = int(box[0] * w_o / 320), int(box[1] * h_o / 320)
+            x2, y2 = int(box[2] * w_o / 320), int(box[3] * h_o / 320)
+
+            cv2.rectangle(img_orig, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            # Grid Search within ROI
+            roi = img_orig[max(0,y1):min(h_o,y2), max(0,x1):min(w_o,x2)]
+            if roi.size > 0:
+                landmarks = grid_search_landmarks(roi)
+                # Left Eye (Blue), Right Eye (Blue), Nose (Red)
+                cv2.circle(img_orig, (landmarks["L_Eye"][0] + x1, landmarks["L_Eye"][1] + y1), 5, (255, 0, 0), -1)
+                cv2.circle(img_orig, (landmarks["R_Eye"][0] + x1, landmarks["R_Eye"][1] + y1), 5, (255, 0, 0), -1)
+                cv2.circle(img_orig, (landmarks["Nose"][0] + x1, landmarks["Nose"][1] + y1), 5, (0, 0, 255), -1)
+
+        cv2.imwrite(os.path.join(OUT_DIR, img_name), img_orig)
+
+if __name__ == "__main__":
+    train_if_needed()
+    run_inference()
+    print("🎉 Done! Check data/output for 3-landmark grid-searched images.")
