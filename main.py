@@ -6,7 +6,7 @@ from torchvision.models.detection import ssdlite320_mobilenet_v3_large
 from torchvision.models.detection.ssd import SSDHead
 from torchvision.transforms import functional as F
 
-# --- CONFIG ---
+
 IMG_DIR = 'data/images'
 LABEL_DIR = 'data/labels'
 OUT_DIR = 'data/output'
@@ -26,7 +26,7 @@ def load_custom_ssd(num_classes=2):
     model.head = SSDHead(in_channels, num_anchors, num_classes)
     return model
 
-# --- GRID SEARCH LOGIC ---
+
 def grid_search_landmarks(roi):
     """
     Performs a grid search within the ROI to find 3 specific landmarks.
@@ -36,11 +36,11 @@ def grid_search_landmarks(roi):
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
     # Define Grid Sectors (y_start, y_end, x_start, x_end)
-    # 1. Left Eye: Top-Left quadrant
+    #Left Eye ->Top-Left quadrant
     l_eye_grid = gray[0:int(h*0.45), 0:int(w*0.5)]
-    # 2. Right Eye: Top-Right quadrant
+    # Right Eye: Top-Right quadrant
     r_eye_grid = gray[0:int(h*0.45), int(w*0.5):w]
-    # 3. Nose: Bottom-Center region
+    #  Nose: Bottom-Center region
     nose_grid = gray[int(h*0.45):int(h*0.9), int(w*0.2):int(w*0.8)]
 
     def get_darkest_point(grid_patch):
@@ -58,7 +58,7 @@ def grid_search_landmarks(roi):
         "Nose": (nose[0] + int(w*0.2), nose[1] + int(h*0.45))
     }
 
-# --- TRAINING (Run if .pth is missing) ---
+# TRAINING (Run if .pth is missing) 
 def train_if_needed():
     if os.path.exists(MODEL_PATH): return
     model = load_custom_ssd()
@@ -67,7 +67,7 @@ def train_if_needed():
     label_files = [f for f in os.listdir(LABEL_DIR) if f.endswith('.txt')]
     
     print("🎬 Training model to localize face ROI...")
-    for epoch in range(50):
+    for epoch in range(50):  # After 50 epochs goes for testing
         model.train()
         model.backbone.eval()
         for lbl in label_files:
@@ -90,7 +90,7 @@ def train_if_needed():
             optimizer.step()
     torch.save(model.state_dict(), MODEL_PATH)
 
-# --- INFERENCE ---
+# INFERENCE
 def run_inference():
     model = load_custom_ssd()
     model.load_state_dict(torch.load(MODEL_PATH))
@@ -129,4 +129,3 @@ def run_inference():
 if __name__ == "__main__":
     train_if_needed()
     run_inference()
-    print("🎉 Done! Check data/output for 3-landmark grid-searched images.")
