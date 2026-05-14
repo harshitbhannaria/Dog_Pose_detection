@@ -63,8 +63,7 @@ def train_if_needed():
     for param in model.backbone.parameters(): param.requires_grad = False
     optimizer = torch.optim.Adam(model.head.parameters(), lr=0.0005)
     label_files = [f for f in os.listdir(LABEL_DIR) if f.endswith('.txt')]
-    
-    print("🎬 Training model to localize face ROI...")
+
     for epoch in range(50):  # After 50 epochs goes for testing
         model.train()
         model.backbone.eval()
