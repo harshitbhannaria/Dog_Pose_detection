@@ -28,9 +28,7 @@ def load_custom_ssd(num_classes=2):
 
 
 def grid_search_landmarks(roi):
-    """
-    Performs a grid search within the ROI to find 3 specific landmarks.
-    """
+    #Performs a grid search within the ROI to find 3 specific landmarks.
     h, w = roi.shape[:2]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
