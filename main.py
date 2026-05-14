@@ -58,7 +58,7 @@ def grid_search_landmarks(roi):
         "Nose": (nose[0] + int(w*0.2), nose[1] + int(h*0.45))
     }
 
-# TRAINING (Run if .pth is missing) 
+# TRAINING (Runs if .pth is missing) 
 def train_if_needed():
     if os.path.exists(MODEL_PATH): return
     model = load_custom_ssd()
