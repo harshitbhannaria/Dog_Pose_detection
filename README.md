@@ -7,3 +7,4 @@ This project detects 3 key landmarks (Nose, L_Eye, R_Eye) on a dog's face using 
 2. It divides the boundary into search zones.
 3. It identifies the darkest pixel clusters (intensity minima) within those zones to pinpoint the eyes and nose.
 
+## Output mentioned in data/output directory 
